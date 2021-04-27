@@ -55,7 +55,7 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
         description='A switch to indicate whether polygons possessing a building_status '
         'of "Existing" under their properties should be imported as ContextShade '
         'instead of Building objects.',
-        default='no-context',
+        default='existing-to-context',
         spec={'type': 'string', 'enum': ['no-context', 'existing-to-context']}
     )
 
