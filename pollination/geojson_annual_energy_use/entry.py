@@ -3,8 +3,10 @@ from dataclasses import dataclass
 from typing import Dict, List
 from pollination.dragonfly_energy.translate import ModelFromGeojson
 from pollination.dragonfly_energy.edit import WindowsByRatio
-from pollination.dragonfly_annual_energy_use.entry import \
-    DragonflyAnnualEnergyUseEntryPoint
+from pollination.dragonfly_energy.translate import ModelToHoneybee
+from pollination.honeybee_energy.settings import SimParDefault
+from pollination.honeybee_energy.simulate import SimulateModel
+from pollination.honeybee_energy.result import EnergyUseIntensity
 
 # input/output alias
 from pollination.alias.inputs.ddy import ddy_input
@@ -115,17 +117,60 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
         self, model=convert_from_geojson._outputs.model, ratio=window_ratio
     ) -> List[Dict]:
         return [
-            {'from': WindowsByRatio()._outputs.new_model,
-             'to': 'model.dfjson'}
+            {
+                'from': WindowsByRatio()._outputs.new_model,
+                'to': 'model.dfjson'
+            }
             ]
 
-    @task(template=DragonflyAnnualEnergyUseEntryPoint, needs=[assign_windows])
-    def run_annual_energy_use(
-        self, model=assign_windows._outputs.new_model, epw=epw, ddy=ddy,
-        use_multiplier=use_multiplier, shade_dist=shade_dist,
-        filter_des_days=filter_des_days, units=units
+    @task(template=ModelToHoneybee, needs=[assign_windows])
+    def convert_to_honeybee(
+        self, model=assign_windows._outputs.new_model, obj_per_model='Story',
+        use_multiplier=use_multiplier, shade_dist=shade_dist
     ) -> List[Dict]:
-        pass
+        return [
+            {
+                'from': ModelToHoneybee()._outputs.output_folder,
+                'to': 'models'
+            },
+            {
+                'from': ModelToHoneybee()._outputs.hbjson_list,
+                'description': 'Information about exported HBJSONs.'
+            }
+            ]
+
+    @task(template=SimParDefault)
+    def create_sim_par(self, ddy=ddy, filter_des_days=filter_des_days) -> List[Dict]:
+        return [
+            {'from': SimParDefault()._outputs.sim_par_json,
+             'to': 'simulation_parameter.json'}
+            ]
+
+    @task(
+        template=SimulateModel,
+        needs=[create_sim_par, convert_to_honeybee],
+        loop=convert_to_honeybee._outputs.hbjson_list,
+        sub_folder='results',  # create a subfolder for results
+        sub_paths={'model': '{{item.path}}'}  # sub_path for sim_par arg
+    )
+    def run_simulation(
+        self, model=convert_to_honeybee._outputs.output_folder, epw=epw,
+        sim_par=create_sim_par._outputs.sim_par_json
+    ) -> List[Dict]:
+        return [
+            {'from': SimulateModel()._outputs.sql, 'to': 'sql/{{item.id}}.sql'},
+            {'from': SimulateModel()._outputs.html, 'to': 'html/{{item.id}}.htm'},
+            {'from': SimulateModel()._outputs.err, 'to': 'err/{{item.id}}.err'}
+            ]
+
+    @task(template=EnergyUseIntensity, needs=[run_simulation])
+    def compute_eui(
+        self, result_folder='results/sql', units=units
+    ) -> List[Dict]:
+        return [
+            {'from': EnergyUseIntensity()._outputs.eui_json,
+             'to': 'eui.json'}
+            ]
 
     # outputs
     eui = Outputs.file(
@@ -137,7 +182,7 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
 
     dfjson = Outputs.file(
         source='model.dfjson',
-        description='Folder containing the DFJSON model used for simulation.'
+        description='The DFJSON model used for simulation.'
     )
 
     hbjson = Outputs.folder(
@@ -148,11 +193,6 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
     sql = Outputs.folder(
         source='results/sql',
         description='Folder containing the result SQL files output by the simulation.'
-    )
-
-    zsz = Outputs.folder(
-        source='results/zsz', description='Folder containing the CSV files with '
-        'the zone loads over the design day.'
     )
 
     html = Outputs.folder(
