@@ -159,6 +159,7 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
     ) -> List[Dict]:
         return [
             {'from': SimulateModel()._outputs.sql, 'to': 'sql/{{item.id}}.sql'},
+            {'from': SimulateModel()._outputs.zsz, 'to': 'zsz/{{item.id}}_zsz.csv'},
             {'from': SimulateModel()._outputs.html, 'to': 'html/{{item.id}}.htm'},
             {'from': SimulateModel()._outputs.err, 'to': 'err/{{item.id}}.err'}
             ]
@@ -193,6 +194,11 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
     sql = Outputs.folder(
         source='results/sql',
         description='Folder containing the result SQL files output by the simulation.'
+    )
+
+    zsz = Outputs.folder(
+        source='results/zsz', description='Folder containing the CSV files with '
+        'the zone loads over the design day.', optional=True
     )
 
     html = Outputs.folder(
