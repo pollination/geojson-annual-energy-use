@@ -4,14 +4,14 @@ from typing import Dict, List
 from pollination.dragonfly_energy.translate import ModelFromGeojson
 from pollination.dragonfly_energy.edit import WindowsByRatio
 from pollination.dragonfly_energy.translate import ModelToHoneybee
-from pollination.honeybee_energy.settings import SimParDefault
 from pollination.honeybee_energy.simulate import SimulateModel
 from pollination.honeybee_energy.result import EnergyUseIntensity
 
 # input/output alias
 from pollination.alias.inputs.ddy import ddy_input
-from pollination.alias.inputs.bool_options import filter_des_days_input, \
-    use_multiplier_input
+from pollination.alias.inputs.bool_options import use_multiplier_input
+from pollination.alias.inputs.simulation import energy_simulation_parameter_input, \
+    measures_input, idf_additional_strings_input
 from pollination.alias.outputs.eui import parse_eui_results
 
 
@@ -34,6 +34,27 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
         description='A DDY file with design days to be used for the initial '
         'sizing calculation.', extensions=['ddy'],
         alias=ddy_input
+    )
+
+    sim_par = Inputs.file(
+        description='SimulationParameter JSON that describes the settings for the '
+        'simulation.', path='sim-par.json', extensions=['json'], optional=True,
+        alias=energy_simulation_parameter_input
+    )
+
+    measures = Inputs.folder(
+        description='A folder containing an OSW JSON be used as the base for the '
+        'execution of the OpenStuduo CLI. This folder must also contain all of the '
+        'measures that are referenced within the OSW.', path='measures', optional=True,
+        alias=measures_input
+    )
+
+    additional_string = Inputs.str(
+        description='An additional text string to be appended to the IDF before '
+        'simulation. The input should include complete EnergyPlus objects as a '
+        'single string following the IDF format. This input can be used to include '
+        'EnergyPlus objects that are not currently supported by honeybee.', default='',
+        alias=idf_additional_strings_input
     )
 
     window_ratio = Inputs.str(
@@ -86,13 +107,6 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
         'buildings will be excluded from the resulting models.', default='50m'
     )
 
-    filter_des_days = Inputs.str(
-        description='A switch for whether the ddy-file should be filtered to only '
-        'include 99.6 and 0.4 design days', default='filter-des-days',
-        spec={'type': 'string', 'enum': ['filter-des-days', 'all-des-days']},
-        alias=filter_des_days_input
-    )
-
     units = Inputs.str(
         description='A switch to indicate whether the data in the final EUI file '
         'should be in SI (kWh/m2) or IP (kBtu/ft2). Valid values are "si" and "ip".',
@@ -110,7 +124,7 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
                 'from': ModelFromGeojson()._outputs.model,
                 'to': 'model_init.dfjson'
             }
-            ]
+        ]
 
     @task(template=WindowsByRatio, needs=[convert_from_geojson])
     def assign_windows(
@@ -121,7 +135,7 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
                 'from': WindowsByRatio()._outputs.new_model,
                 'to': 'model.dfjson'
             }
-            ]
+        ]
 
     @task(template=ModelToHoneybee, needs=[assign_windows])
     def convert_to_honeybee(
@@ -137,32 +151,25 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
                 'from': ModelToHoneybee()._outputs.hbjson_list,
                 'description': 'Information about exported HBJSONs.'
             }
-            ]
-
-    @task(template=SimParDefault)
-    def create_sim_par(self, ddy=ddy, filter_des_days=filter_des_days) -> List[Dict]:
-        return [
-            {'from': SimParDefault()._outputs.sim_par_json,
-             'to': 'simulation_parameter.json'}
-            ]
+        ]
 
     @task(
         template=SimulateModel,
-        needs=[create_sim_par, convert_to_honeybee],
+        needs=[convert_to_honeybee],
         loop=convert_to_honeybee._outputs.hbjson_list,
         sub_folder='results',  # create a subfolder for results
         sub_paths={'model': '{{item.path}}'}  # sub_path for sim_par arg
     )
     def run_simulation(
-        self, model=convert_to_honeybee._outputs.output_folder, epw=epw,
-        sim_par=create_sim_par._outputs.sim_par_json
+        self, model=convert_to_honeybee._outputs.output_folder, epw=epw, ddy=ddy,
+        sim_par=sim_par, measures=measures, additional_string=additional_string
     ) -> List[Dict]:
         return [
             {'from': SimulateModel()._outputs.sql, 'to': 'sql/{{item.id}}.sql'},
             {'from': SimulateModel()._outputs.zsz, 'to': 'zsz/{{item.id}}_zsz.csv'},
             {'from': SimulateModel()._outputs.html, 'to': 'html/{{item.id}}.htm'},
             {'from': SimulateModel()._outputs.err, 'to': 'err/{{item.id}}.err'}
-            ]
+        ]
 
     @task(template=EnergyUseIntensity, needs=[run_simulation])
     def compute_eui(
@@ -171,7 +178,7 @@ class GeojsonAnnualEnergyUseEntryPoint(DAG):
         return [
             {'from': EnergyUseIntensity()._outputs.eui_json,
              'to': 'eui.json'}
-            ]
+        ]
 
     # outputs
     eui = Outputs.file(
